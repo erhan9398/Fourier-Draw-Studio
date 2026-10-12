@@ -224,9 +224,9 @@
     <div class="live" id="live"></div>
     <div class="controls">
       <label class="slider wide"><span>Çember</span>
-        <input type="range" id="circles" min="1" max="2000" step="1" value="300"><output for="circles">300</output></label>
+        <input type="range" id="circles" min="1" max="4000" step="1" value="1000"><output for="circles">1000</output></label>
       <label class="slider"><span>Hız</span>
-        <input type="range" id="speed" min="1" max="10" step="1" value="1"><output for="speed">1</output></label>
+        <input type="range" id="speed" min="0.1" max="10" step="0.1" value="0.5"><output for="speed">0.5</output></label>
     </div>
   </section>
 </main>
@@ -240,11 +240,12 @@
 (() => {
   'use strict';
 
-  const NUM_POINTS = 2000;       // konturdan alınan örnek sayısı (= en fazla çember sayısı)
-  const FRAMES_PER_LOOP = 800;   // bir tam turdaki adım sayısı
+  const NUM_POINTS = 4000;       // konturdan alınan örnek sayısı (= en fazla çember sayısı)
+  const STEPS_PER_LOOP = 4000;   // bir tam turdaki adım sayısı (küçük yazılar için sık örnekleme)
+  const STEPS_PER_FRAME = 5;     // hız 1'de kare başına adım (bir tur ≈ 13 sn)
   const MAX_IMAGE_SIZE = 800;    // büyük resimler bu boyuta küçültülür
   const COLORS = {
-    bg: '#0d1117', target: '#30363d', circle: 'rgba(139,148,158,0.25)', arm: 'rgba(255,123,114,0.7)',
+    bg: '#0d1117', target: 'rgba(188,140,255,0.3)', circle: 'rgba(139,148,158,0.25)', arm: 'rgba(255,123,114,0.7)',
     path: '#58a6ff', preview: '#ff4d4d', selection: '#f2cc60',
   };
 
@@ -255,32 +256,125 @@
 
   // ===================== 1. Kontur kaynakları =====================
 
-  function humanOutline() {
-    // Baş: (0, 0.85) merkezli yay, tepeden boyna kadar sağ taraf
-    const head = [];
-    for (let i = 0; i < 25; i++) {
-      const a = Math.PI / 2 + (-Math.PI / 3 - Math.PI / 2) * i / 24;
-      head.push([0.12 * Math.cos(a), 0.85 + 0.12 * Math.sin(a)]);
+  function vitruvianMan() {
+    // Leonardo da Vinci'nin Vitruvius Adamı (basitleştirilmiş).
+    // Boy = 2 (ayak y=-1, baş y=1); kol açıklığı = boy olduğu için kare [-1, 1] x [-1, 1].
+    // Çember göbek merkezli ve kareye alttan teğet; kalkık kollar ve açık bacaklar çembere değer.
+    const center = [0, 0.2], R = 1.2;
+
+    // Başlangıç noktasından verilen açıyla gidip çembere değen nokta
+    const toCircle = ([x, y], deg) => {
+      const dx = Math.cos(deg * Math.PI / 180), dy = Math.sin(deg * Math.PI / 180);
+      const ox = x - center[0], oy = y - center[1];
+      const b = ox * dx + oy * dy;
+      const d = -b + Math.sqrt(b * b - (ox * ox + oy * oy - R * R));
+      return [x + d * dx, y + d * dy];
+    };
+
+    // İnsanı basit parçalardan (baş, gövde, kalın uzuv çizgileri) gizli bir resme çiz,
+    // sonra fotoğraflardaki gibi dış hattını izle: iki pozun birleşimi tek bir siluet olur.
+    const S = 300, x0 = -1.15, y0 = 1.2;  // piksel/birim ve resmin sol üst köşesi
+    const w = Math.round(2.3 * S), h = Math.round(2.35 * S);
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const P = ([x, y]) => [(x - x0) * S, (y0 - y) * S];
+    ctx.fillStyle = ctx.strokeStyle = '#fff';
+    ctx.lineCap = ctx.lineJoin = 'round';
+
+    const limb = (points, widths) => {
+      for (let i = 0; i < points.length - 1; i++) {
+        ctx.lineWidth = widths[i] * S;
+        ctx.beginPath();
+        ctx.moveTo(...P(points[i]));
+        ctx.lineTo(...P(points[i + 1]));
+        ctx.stroke();
+      }
+    };
+    const lerp = (a, b, f) => [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+
+    // Baş ve boyun
+    ctx.beginPath();
+    ctx.arc(...P([0, 0.87]), 0.13 * S, 0, 2 * Math.PI);
+    ctx.fill();
+    limb([[0, 0.76], [0, 0.62]], [0.10]);
+
+    // Gövde (omuzdan kalçaya)
+    ctx.beginPath();
+    [[-0.21, 0.66], [0.21, 0.66], [0.16, 0.32], [0.13, 0.14], [0.17, -0.02],
+     [0, -0.06], [-0.17, -0.02], [-0.13, 0.14], [-0.16, 0.32]]
+      .forEach((p, i) => (i ? ctx.lineTo(...P(p)) : ctx.moveTo(...P(p))));
+    ctx.closePath();
+    ctx.fill();
+
+    for (const side of [1, -1]) {
+      const shoulder = [0.17 * side, 0.6];
+      // Kollar: yatay (parmak uçları karenin kenarında) ve kalkık (parmak uçları çemberde)
+      for (const tip of [[side, 0.6], toCircle(shoulder, side > 0 ? 28 : 152)]) {
+        limb([shoulder, lerp(shoulder, tip, 0.45), lerp(shoulder, tip, 0.85), tip], [0.085, 0.065, 0.045]);
+      }
+      // Bacaklar: bitişik (ayaklar karenin tabanında) ve açık (ayaklar çemberde)
+      const hip = [0.09 * side, 0.0];
+      limb([hip, [0.08 * side, -0.48], [0.06 * side, -0.93]], [0.12, 0.075]);
+      limb([[0.06 * side, -0.95], [0.13 * side, -0.975]], [0.05]);  // ayak
+      const foot = toCircle(hip, side > 0 ? -70 : -110);
+      limb([hip, lerp(hip, foot, 0.5), lerp(hip, foot, 0.95)], [0.12, 0.075]);
     }
-    // Sağ yarı: boyun -> omuz -> kol -> el -> koltuk altı -> gövde -> bacak -> ayak -> kasık
-    const body = [
-      [0.05, 0.70],                               // boyun
-      [0.20, 0.65], [0.27, 0.60],                 // omuz
-      [0.31, 0.45], [0.34, 0.25], [0.36, 0.08],   // kolun dış kenarı
-      [0.39, 0.00], [0.37, -0.06], [0.32, -0.04], // el
-      [0.30, 0.08], [0.27, 0.28], [0.23, 0.44],   // kolun iç kenarı
-      [0.19, 0.48],                               // koltuk altı
-      [0.16, 0.30], [0.15, 0.22],                 // bel
-      [0.19, 0.05],                               // kalça
-      [0.18, -0.30], [0.15, -0.60], [0.13, -0.82],// bacağın dış kenarı
-      [0.21, -0.87], [0.21, -0.91], [0.05, -0.91],// ayak
-      [0.05, -0.60], [0.04, -0.25],               // bacağın iç kenarı
-      [0.0, -0.08],                               // kasık
-    ];
-    const right = head.concat(body);
-    // Sol yarı: sağ yarının aynası, ters sırada
-    const left = right.slice(1, -1).reverse().map(([x, y]) => [-x, y]);
-    return [right.concat(left)];
+
+    const alpha = ctx.getImageData(0, 0, w, h).data;
+    const bin = new Uint8Array(w * h);
+    for (let i = 0; i < bin.length; i++) bin[i] = alpha[i * 4 + 3] > 127 ? 1 : 0;
+    const outline = traceContours(bin, w, h).sort((a, b) => b.length - a.length)[0];
+
+    // Piksel basamaklarını yumuşat (dairesel hareketli ortalama) ve dünya koordinatına çevir
+    const k = 4, n = outline.length;
+    const man = outline.map((_, i) => {
+      let sx = 0, sy = 0;
+      for (let j = -k; j <= k; j++) {
+        const p = outline[(i + j + n) % n];
+        sx += p[0]; sy += p[1];
+      }
+      return [sx / (2 * k + 1) / S + x0, y0 - sy / (2 * k + 1) / S];
+    });
+
+    const circle = Array.from({ length: 240 }, (_, i) => {
+      const a = 2 * Math.PI * i / 240;
+      return [center[0] + R * Math.cos(a), center[1] + R * Math.sin(a)];
+    });
+    const square = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    return [man, square, circle];
+  }
+
+  function textContours(lines, right, top, lineHeight) {
+    // Yazıyı gizli bir resme yaz, harflerin dış hatlarını ve deliklerini (o, e, a ...) izle.
+    // Sağa hizalı; (right, top) yazının sağ üst köşesi, lineHeight satır yüksekliği (dünya birimi).
+    const px = 80, lead = px * 1.25, margin = 10;
+    const font = `italic bold ${px}px Georgia, "Times New Roman", serif`;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.font = font;
+    const w = Math.ceil(Math.max(...lines.map(l => ctx.measureText(l).width))) + 2 * margin;
+    const h = Math.ceil(lines.length * lead) + 2 * margin;
+    canvas.width = w; canvas.height = h;
+    ctx.font = font;  // boyut değişince sıfırlanır
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    lines.forEach((line, i) => ctx.fillText(line, w - margin, margin + i * lead));
+
+    const alpha = ctx.getImageData(0, 0, w, h).data;
+    const bin = new Uint8Array(w * h), inv = new Uint8Array(w * h);
+    for (let i = 0; i < bin.length; i++) {
+      bin[i] = alpha[i * 4 + 3] > 127 ? 1 : 0;
+      inv[i] = 1 - bin[i];
+    }
+    // Delikler: kenara değmeyen arka plan bölgeleri
+    const touchesEdge = c => c.some(([x, y]) => x === 0 || y === 0 || x === w - 1 || y === h - 1);
+    const holes = traceContours(inv, w, h).filter(c => !touchesEdge(c));
+    const scale = lineHeight / lead;
+    return traceContours(bin, w, h).concat(holes)
+      .filter(c => c.length >= 4)
+      .map(c => c.map(([x, y]) => [right - (w - margin - x) * scale, top - (y - margin) * scale]));
   }
 
   // ===================== 2. Görüntü işleme =====================
@@ -820,7 +914,9 @@
     A.cx = new Float64Array(n + 1);
     A.cy = new Float64Array(n + 1);
     A.frame = 0;
+    A.carry = 0;
     A.trail = [];
+    evaluate(A, 0);  // ilk karede kollar doğru yerde olsun
     $('animTitle').textContent = `Fourier Serisi: ${A.name}  (${n} çember)`;
     $('equation').innerHTML = equationHtml(terms, n);
   }
@@ -935,19 +1031,25 @@
   function tick() {
     const A = state.anim;
     if (A) {
-      let t = 0, point = [0, 0];
-      for (let step = 0; step < +sliders.speed.value; step++) {
-        if (A.frame >= FRAMES_PER_LOOP) { A.frame = 0; A.trail = []; }
+      // Kesirli hızlarda (ör. 0.5) artan adım sonraki kareye aktarılır
+      A.carry += STEPS_PER_FRAME * +sliders.speed.value;
+      const steps = Math.floor(A.carry);
+      A.carry -= steps;
+      let t = 0, point = null;
+      for (let step = 0; step < steps; step++) {
+        if (A.frame >= STEPS_PER_LOOP) { A.frame = 0; A.trail = []; }
         // t ∈ [0, 1): bir tam turda tüm kontur çizilir
-        t = A.frame / FRAMES_PER_LOOP;
+        t = A.frame / STEPS_PER_LOOP;
         point = evaluate(A, t);
         A.trail.push(A.up[Math.floor(t * NUM_POINTS)] ? null : point);
         A.frame++;
       }
       drawAnim(A);
-      const [x, y] = point;
-      $('live').textContent =
-        `t = ${t.toFixed(3)}    f(t) = ${x < 0 ? '−' : '+'}${Math.abs(x).toFixed(3)} ${y < 0 ? '−' : '+'} ${Math.abs(y).toFixed(3)}i`;
+      if (point) {
+        const [x, y] = point;
+        $('live').textContent =
+          `t = ${t.toFixed(3)}    f(t) = ${x < 0 ? '−' : '+'}${Math.abs(x).toFixed(3)} ${y < 0 ? '−' : '+'} ${Math.abs(y).toFixed(3)}i`;
+      }
     }
     requestAnimationFrame(tick);
   }
@@ -997,7 +1099,11 @@
 
   new ResizeObserver(drawEditor).observe(editor);
 
-  setDrawing(humanOutline(), 'İnsan Vücudu');
+  // Varsayılan çizim: Vitruvius Adamı + Fourier çemberlerinin yazdığı imza (sağ altta)
+  setDrawing(
+    vitruvianMan().concat(textContours(
+      ['by organic intelligence Erhan', 'with super intelligence Claude'], 1.25, -1.06, 0.2)),
+    'Vitruvius Adamı (Leonardo da Vinci)');
   drawEditor();
   requestAnimationFrame(tick);
 })();
