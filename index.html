@@ -145,6 +145,21 @@
     text-overflow: ellipsis;
   }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .credit {
+    position: fixed;
+    right: 16px;
+    bottom: 12px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: right;
+  }
+  .credit strong { color: var(--text); font-weight: 600; }
+  body { padding-bottom: 36px; }
+  @media (max-width: 900px) {
+    /* Telefonda sabit yazı kontrollerin üstüne binmesin: sayfanın sonuna koy */
+    .credit { position: static; padding: 0 16px 16px; }
+    body { padding-bottom: 0; }
+  }
 </style>
 </head>
 <body>
@@ -215,6 +230,11 @@
     </div>
   </section>
 </main>
+
+<footer class="credit">
+  Created by <strong>Erhan Cengiz</strong> (organic intelligence)
+  with the help of <strong>Claude</strong> (super intelligence) :-D
+</footer>
 
 <script>
 (() => {
