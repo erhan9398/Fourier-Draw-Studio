@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fourier Çizim Stüdyosu</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --control: #21262d;
+    --control-hover: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #238636;
+    --green-hover: #2ea043;
+    --preview: #ff4d4d;
+    --selection: #f2cc60;
+    --arm: #ff7b72;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 14px;
+  }
+  h1 { font-size: 18px; margin: 0; }
+  header p { margin: 0; color: var(--muted); }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+  h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: var(--bg);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #editor { cursor: crosshair; touch-action: none; }
+  .stage.dragover { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  .placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    color: var(--muted);
+    pointer-events: none;
+  }
+  .placeholder[hidden] { display: none; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-end; }
+  .group { display: flex; flex-direction: column; gap: 4px; }
+  .group-label { color: var(--muted); font-size: 12px; }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .seg label { position: relative; cursor: pointer; user-select: none; }
+  .seg label + label span { border-left: 1px solid var(--border); }
+  .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .seg span { display: block; padding: 5px 10px; background: var(--control); }
+  .seg label:hover span { background: var(--control-hover); }
+  .seg input:checked + span { background: #1f3a5f; color: #fff; }
+  .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .btn {
+    font: inherit;
+    color: var(--text);
+    background: var(--control);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--control-hover); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
+  .btn.primary:hover { background: var(--green-hover); }
+  .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding-bottom: 5px; }
+  .check input { accent-color: var(--accent); }
+  .slider { display: flex; align-items: center; gap: 8px; }
+  .slider span { color: var(--muted); min-width: 52px; }
+  .slider input { accent-color: var(--accent); width: 140px; }
+  .slider output { min-width: 3ch; font-variant-numeric: tabular-nums; }
+  .slider.wide { flex: 1 1 260px; }
+  .slider.wide input { flex: 1; width: auto; min-width: 120px; }
+  .action-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+  #info { color: var(--muted); }
+  .equation {
+    font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", Georgia, serif;
+    font-size: 16px;
+    line-height: 2.1;
+    text-align: center;
+    overflow-wrap: anywhere;
+    min-height: 4.2em;
+  }
+  .equation sup { font-size: 0.68em; }
+  .equation .term { white-space: nowrap; }
+  .live {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--accent);
+    text-align: center;
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fourier Çizim Stüdyosu</h1>
+  <p>Fotoğraf yükle, bölge seç, dönen çemberlerle çiz.</p>
+</header>
+
+<main>
+  <section aria-label="Fotoğraf ve seçim">
+    <h2 id="photoTitle">Fotoğraf ve Seçim</h2>
+    <div class="stage" id="editorStage">
+      <canvas id="editor" aria-label="Fotoğraf ve seçim alanı"></canvas>
+      <div class="placeholder" id="placeholder">
+        "Fotoğraf Yükle" ile bir resim seçin,<br>buraya sürükleyip bırakın veya yapıştırın (Ctrl+V)
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="group">
+        <button class="btn" id="loadBtn" type="button">Fotoğraf Yükle</button>
+        <input type="file" id="fileInput" accept="image/*" class="sr-only" tabindex="-1">
+      </div>
+      <div class="group">
+        <span class="group-label" id="toolLabel">Seçim aracı</span>
+        <div class="seg" role="radiogroup" aria-labelledby="toolLabel">
+          <label><input type="radio" name="tool" value="all" checked><span>Tüm resim</span></label>
+          <label><input type="radio" name="tool" value="rect"><span>Dikdörtgen</span></label>
+          <label><input type="radio" name="tool" value="lasso"><span>Serbest</span></label>
+        </div>
+      </div>
+      <div class="group">
+        <span class="group-label" id="modeLabel">Kontur yöntemi</span>
+        <div class="seg" role="radiogroup" aria-labelledby="modeLabel">
+          <label><input type="radio" name="mode" value="outline" checked><span>Dış hat</span></label>
+          <label><input type="radio" name="mode" value="edges"><span>Kenarlar</span></label>
+          <label><input type="radio" name="mode" value="selection"><span>Seçim şekli</span></label>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="invert">Ters çevir</label>
+    </div>
+
+    <div class="controls">
+      <label class="slider"><span>Eşik</span>
+        <input type="range" id="thresh" min="0" max="255" step="1" value="128"><output for="thresh">128</output></label>
+      <label class="slider"><span>Filtre %</span>
+        <input type="range" id="noise" min="0" max="50" step="1" value="5"><output for="noise">5</output></label>
+    </div>
+
+    <div class="action-row">
+      <button class="btn primary" id="drawBtn" type="button">Çiz ▶</button>
+      <span id="info" aria-live="polite"></span>
+    </div>
+  </section>
+
+  <section aria-label="Fourier çizimi">
+    <h2 id="animTitle">Fourier Serisi</h2>
+    <div class="stage" id="animStage">
+      <canvas id="anim" aria-label="Fourier çember animasyonu"></canvas>
+    </div>
+    <div class="equation" id="equation"></div>
+    <div class="live" id="live"></div>
+    <div class="controls">
+      <label class="slider wide"><span>Çember</span>
+        <input type="range" id="circles" min="1" max="2000" step="1" value="300"><output for="circles">300</output></label>
+      <label class="slider"><span>Hız</span>
+        <input type="range" id="speed" min="1" max="10" step="1" value="1"><output for="speed">1</output></label>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const NUM_POINTS = 2000;       // konturdan alınan örnek sayısı (= en fazla çember sayısı)
+  const FRAMES_PER_LOOP = 800;   // bir tam turdaki adım sayısı
+  const MAX_IMAGE_SIZE = 800;    // büyük resimler bu boyuta küçültülür
+  const COLORS = {
+    bg: '#0d1117', target: '#30363d', circle: 'rgba(139,148,158,0.25)', arm: 'rgba(255,123,114,0.7)',
+    path: '#58a6ff', preview: '#ff4d4d', selection: '#f2cc60',
+  };
+
+  const $ = id => document.getElementById(id);
+  const editor = $('editor'), animCanvas = $('anim');
+  const sliders = { thresh: $('thresh'), noise: $('noise'), circles: $('circles'), speed: $('speed') };
+  const radioValue = name => document.querySelector(`input[name="${name}"]:checked`).value;
+
+  // ===================== 1. Kontur kaynakları =====================
+
+  function humanOutline() {
+    // Baş: (0, 0.85) merkezli yay, tepeden boyna kadar sağ taraf
+    const head = [];
+    for (let i = 0; i < 25; i++) {
+      const a = Math.PI / 2 + (-Math.PI / 3 - Math.PI / 2) * i / 24;
+      head.push([0.12 * Math.cos(a), 0.85 + 0.12 * Math.sin(a)]);
+    }
+    // Sağ yarı: boyun -> omuz -> kol -> el -> koltuk altı -> gövde -> bacak -> ayak -> kasık
+    const body = [
+      [0.05, 0.70],                               // boyun
+      [0.20, 0.65], [0.27, 0.60],                 // omuz
+      [0.31, 0.45], [0.34, 0.25], [0.36, 0.08],   // kolun dış kenarı
+      [0.39, 0.00], [0.37, -0.06], [0.32, -0.04], // el
+      [0.30, 0.08], [0.27, 0.28], [0.23, 0.44],   // kolun iç kenarı
+      [0.19, 0.48],                               // koltuk altı
+      [0.16, 0.30], [0.15, 0.22],                 // bel
+      [0.19, 0.05],                               // kalça
+      [0.18, -0.30], [0.15, -0.60], [0.13, -0.82],// bacağın dış kenarı
+      [0.21, -0.87], [0.21, -0.91], [0.05, -0.91],// ayak
+      [0.05, -0.60], [0.04, -0.25],               // bacağın iç kenarı
+      [0.0, -0.08],                               // kasık
+    ];
+    const right = head.concat(body);
+    // Sol yarı: sağ yarının aynası, ters sırada
+    const left = right.slice(1, -1).reverse().map(([x, y]) => [-x, y]);
+    return [right.concat(left)];
+  }
+
+  // ===================== 2. Görüntü işleme =====================
+
+  function gaussianBlur(src, w, h) {
+    // Ayrılabilir 5x5 Gauss çekirdeği [1 4 6 4 1] / 16
+    const k = [1, 4, 6, 4, 1];
+    const tmp = new Float32Array(w * h), out = new Uint8Array(w * h);
+    const clamp = (v, max) => (v < 0 ? 0 : v > max ? max : v);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let s = 0;
+        for (let i = -2; i <= 2; i++) s += k[i + 2] * src[y * w + clamp(x + i, w - 1)];
+        tmp[y * w + x] = s / 16;
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let s = 0;
+        for (let i = -2; i <= 2; i++) s += k[i + 2] * tmp[clamp(y + i, h - 1) * w + x];
+        out[y * w + x] = Math.round(s / 16);
+      }
+    }
+    return out;
+  }
+
+  function otsu(values, mask) {
+    // Seçili bölgedeki pikseller için Otsu eşiği (ikili = değer > eşik)
+    const hist = new Float64Array(256);
+    let total = 0;
+    for (let i = 0; i < values.length; i++) if (mask[i]) { hist[values[i]]++; total++; }
+    if (!total) return 128;
+    let sumAll = 0;
+    for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+    let wB = 0, sumB = 0, best = 0, bestT = 0;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (!wB) continue;
+      const wF = total - wB;
+      if (!wF) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB, mF = (sumAll - sumB) / wF;
+      const between = wB * wF * (mB - mF) ** 2;
+      if (between > best) { best = between; bestT = t; }
+    }
+    return bestT;
+  }
+
+  function morph(src, w, h, r, isMax, borderValue) {
+    // Kare çekirdekli genişletme (isMax) / aşındırma; borderValue yoksa dışarıdaki pikseller yok sayılır
+    const pass = (input, horizontal) => {
+      const out = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let v = isMax ? 0 : 1;
+          for (let i = -r; i <= r; i++) {
+            const xx = horizontal ? x + i : x, yy = horizontal ? y : y + i;
+            let p;
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) {
+              if (borderValue === undefined) continue;
+              p = borderValue;
+            } else {
+              p = input[yy * w + xx];
+            }
+            if (isMax ? p > v : p < v) v = p;
+          }
+          out[y * w + x] = v;
+        }
+      }
+      return out;
+    };
+    return pass(pass(src, true), false);
+  }
+
+  function canny(blur, w, h, low, high) {
+    const mag = new Float32Array(w * h), gxA = new Float32Array(w * h), gyA = new Float32Array(w * h);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const tl = blur[i - w - 1], t = blur[i - w], tr = blur[i - w + 1];
+        const l = blur[i - 1], r = blur[i + 1];
+        const bl = blur[i + w - 1], b = blur[i + w], br = blur[i + w + 1];
+        const gx = (tr + 2 * r + br) - (tl + 2 * l + bl);
+        const gy = (bl + 2 * b + br) - (tl + 2 * t + tr);
+        gxA[i] = gx; gyA[i] = gy;
+        mag[i] = Math.abs(gx) + Math.abs(gy);
+      }
+    }
+    // Maksimum olmayanları bastır: kenarı tek piksel inceliğe indir
+    const nms = new Float32Array(w * h);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x, m = mag[i];
+        if (m < low) continue;
+        const ax = Math.abs(gxA[i]), ay = Math.abs(gyA[i]);
+        let n1, n2;
+        if (ay <= ax * 0.4142) { n1 = mag[i - 1]; n2 = mag[i + 1]; }
+        else if (ay >= ax * 2.4142) { n1 = mag[i - w]; n2 = mag[i + w]; }
+        else if (gxA[i] * gyA[i] > 0) { n1 = mag[i - w - 1]; n2 = mag[i + w + 1]; }
+        else { n1 = mag[i - w + 1]; n2 = mag[i + w - 1]; }
+        if (m > n1 && m >= n2) nms[i] = m;
+      }
+    }
+    // Histerezis: güçlü kenarlara bağlı zayıf kenarları tut
+    const edges = new Uint8Array(w * h), stack = [];
+    for (let i = 0; i < w * h; i++) if (nms[i] >= high) { edges[i] = 1; stack.push(i); }
+    while (stack.length) {
+      const i = stack.pop(), x = i % w, y = (i - x) / w;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const j = yy * w + xx;
+          if (!edges[j] && nms[j] >= low) { edges[j] = 1; stack.push(j); }
+        }
+      }
+    }
+    return edges;
+  }
+
+  // Moore komşuluğu ile her bağlı bileşenin dış sınırını izler
+  const DX = [-1, -1, 0, 1, 1, 1, 0, -1], DY = [0, -1, -1, -1, 0, 1, 1, 1];  // saat yönü, batıdan başlar
+  const DIR = new Int8Array(9);
+  for (let d = 0; d < 8; d++) DIR[(DY[d] + 1) * 3 + DX[d] + 1] = d;
+
+  function traceContours(bin, w, h) {
+    const fg = (x, y) => x >= 0 && y >= 0 && x < w && y < h && bin[y * w + x] === 1;
+    const seen = new Uint8Array(w * h), contours = [], stack = [];
+
+    const traceOne = (sx, sy) => {
+      const pts = [[sx, sy]];
+      let px = sx, py = sy, back = 0, second = -1;
+      for (let step = 0; step < 4 * w * h; step++) {
+        let found = -1;
+        for (let i = 1; i <= 8; i++) {
+          const d = (back + i) & 7;
+          if (fg(px + DX[d], py + DY[d])) { found = d; break; }
+        }
+        if (found < 0) break;  // tek piksel
+        const nx = px + DX[found], ny = py + DY[found];
+        // Başlangıca, ilk adımdaki yönle geri dönünce dur
+        if (step > 0 && px === sx && py === sy && ny * w + nx === second) break;
+        if (step === 0) second = ny * w + nx;
+        const prev = (found + 7) & 7;  // son bakılan arka plan pikseli
+        const bx = px + DX[prev], by = py + DY[prev];
+        px = nx; py = ny;
+        back = DIR[(by - py + 1) * 3 + (bx - px + 1)];
+        pts.push([px, py]);
+      }
+      const last = pts[pts.length - 1];
+      if (pts.length > 1 && last[0] === sx && last[1] === sy) pts.pop();
+      return pts;
+    };
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!bin[i] || seen[i]) continue;
+        contours.push(traceOne(x, y));
+        // Bileşenin geri kalanını işaretle, tekrar izlenmesin
+        seen[i] = 1;
+        stack.push(i);
+        while (stack.length) {
+          const j = stack.pop(), jx = j % w, jy = (j - jx) / w;
+          for (let d = 0; d < 8; d++) {
+            const nx = jx + DX[d], ny = jy + DY[d];
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const k = ny * w + nx;
+            if (bin[k] && !seen[k]) { seen[k] = 1; stack.push(k); }
+          }
+        }
+      }
+    }
+    return contours;
+  }
+
+  function arcLength(c) {
+    let s = 0;
+    for (let i = 0; i < c.length; i++) {
+      const a = c[i], b = c[(i + 1) % c.length];
+      s += Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+    return s;
+  }
+
+  function extractContours(img, mask, mode, thresh, minFrac, invert) {
+    const { w, h, blur } = img;
+    let bin;
+    if (mode === 'edges') {
+      // Tüm kenarlar: çizimler, logolar, detaylı fotoğraflar
+      bin = canny(blur, w, h, thresh * 0.5, thresh);
+      for (let i = 0; i < bin.length; i++) if (!mask[i]) bin[i] = 0;
+    } else {
+      // Dış hat: eşikleme ile nesneyi arka plandan ayır
+      bin = new Uint8Array(w * h);
+      for (let i = 0; i < bin.length; i++) bin[i] = blur[i] > thresh ? 1 : 0;
+      // Seçimin kenarındaki pikseller çoğunlukla arka plandır; onlar beyazsa ters çevir
+      const eroded = morph(mask, w, h, 1, false, 0);
+      let ring = 0, ringOn = 0;
+      for (let i = 0; i < bin.length; i++) if (mask[i] && !eroded[i]) { ring++; ringOn += bin[i]; }
+      const flip = ring > 0 && (ringOn / ring > 0.5) !== invert;
+      for (let i = 0; i < bin.length; i++) bin[i] = mask[i] ? (flip ? 1 - bin[i] : bin[i]) : 0;
+      bin = morph(morph(bin, w, h, 2, true), w, h, 2, false);  // 5x5 kapama: küçük boşlukları doldur
+    }
+
+    let contours = traceContours(bin, w, h)
+      .map(c => ({ c, len: arcLength(c) }))
+      .sort((a, b) => b.len - a.len);
+    if (!contours.length) return [];
+    // Çok küçük gürültü konturlarını at
+    const minLen = Math.max(minFrac * contours[0].len, 10);
+    return contours.slice(0, 60).filter(o => o.len >= minLen).map(o => o.c);
+  }
+
+  function polygonMask(poly, w, h) {
+    const mask = new Uint8Array(w * h);
+    if (!poly) return mask.fill(1);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    poly.forEach(([x, y], i) => (i ? ctx.lineTo(x + 0.5, y + 0.5) : ctx.moveTo(x + 0.5, y + 0.5)));
+    ctx.closePath();
+    ctx.fill();
+    const data = ctx.getImageData(0, 0, w, h).data;
+    for (let i = 0; i < mask.length; i++) mask[i] = data[i * 4 + 3] > 127 ? 1 : 0;
+    return mask;
+  }
+
+  // ===================== 3. Fourier serisi =====================
+
+  function chainContours(contours) {
+    // Konturları en yakın komşu sırasıyla tek bir kapalı yola birleştirir.
+    // pen[i] true ise i -> i+1 parçası konturlar arası geçiştir ve çizilmez.
+    const remaining = contours.map(c => c.concat([c[0]]));  // her konturu kapat
+    let current = remaining.shift();
+    const pts = current.slice();
+    const pen = new Array(current.length - 1).fill(false);
+
+    while (remaining.length) {
+      const [ex, ey] = current[current.length - 1];
+      let bi = 0, bj = 0, bd = Infinity;
+      remaining.forEach((c, i) => {
+        for (let j = 0; j < c.length; j++) {
+          const d = (c[j][0] - ex) ** 2 + (c[j][1] - ey) ** 2;
+          if (d < bd) { bd = d; bi = i; bj = j; }
+        }
+      });
+      // Konturu en yakın noktadan başlayacak şekilde döndür
+      const ring = remaining.splice(bi, 1)[0].slice(0, -1);
+      current = ring.slice(bj).concat(ring.slice(0, bj), [ring[bj]]);
+      pen.push(true);
+      for (let k = 0; k < current.length; k++) {
+        pts.push(current[k]);
+        if (k > 0) pen.push(false);
+      }
+    }
+    pts.push(pts[0]);  // başlangıca dönüş
+    pen.push(contours.length > 1);
+    return { pts, pen };
+  }
+
+  function resample(pts, pen, n) {
+    // Yolu yay uzunluğuna göre eşit aralıklı n noktaya böler
+    const s = new Float64Array(pts.length);
+    for (let i = 1; i < pts.length; i++) {
+      s[i] = s[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    }
+    const total = s[s.length - 1];
+    const xs = new Float64Array(n), ys = new Float64Array(n), up = new Uint8Array(n);
+    let j = 0;
+    for (let i = 0; i < n; i++) {
+      const u = total * i / n;
+      while (j < pts.length - 2 && s[j + 1] <= u) j++;
+      const len = s[j + 1] - s[j], f = len > 0 ? (u - s[j]) / len : 0;
+      xs[i] = pts[j][0] + f * (pts[j + 1][0] - pts[j][0]);
+      ys[i] = pts[j][1] + f * (pts[j + 1][1] - pts[j][1]);
+      up[i] = pen[j] ? 1 : 0;
+    }
+    return { xs, ys, up };
+  }
+
+  function dft(xs, ys) {
+    // c_k = 1/N Σ f_n e^{-2πi k n / N}, f_n = x_n + i y_n
+    const N = xs.length;
+    const cosT = new Float64Array(N), sinT = new Float64Array(N);
+    for (let m = 0; m < N; m++) { cosT[m] = Math.cos(2 * Math.PI * m / N); sinT[m] = Math.sin(2 * Math.PI * m / N); }
+    const terms = [];
+    for (let k = 0; k < N; k++) {
+      let re = 0, im = 0, m = 0;
+      for (let n = 0; n < N; n++) {
+        const c = cosT[m], s = sinT[m];
+        re += xs[n] * c + ys[n] * s;
+        im += ys[n] * c - xs[n] * s;
+        m += k;
+        if (m >= N) m -= N;
+      }
+      re /= N; im /= N;
+      terms.push({ freq: k < N / 2 ? k : k - N, radius: Math.hypot(re, im), phase: Math.atan2(im, re) });
+    }
+    return terms.sort((a, b) => b.radius - a.radius);  // en büyük çember önce
+  }
+
+  // ===================== 4. Uygulama durumu =====================
+
+  const state = {
+    img: null,          // { w, h, canvas, blur }
+    photoName: null,
+    selection: null,    // seçim çokgeni (piksel koordinatı), null = tüm resim
+    mask: null,
+    preview: [],        // bulunan konturlar (piksel koordinatı)
+    drag: null,         // fare ile seçim sürerken
+    anim: null,
+  };
+
+  function setInfo(text) { $('info').textContent = text; }
+
+  function syncOutput(slider) { slider.nextElementSibling.value = slider.value; }
+
+  // ---------- Fotoğraf yükleme ----------
+  function loadFile(file) {
+    if (!file || !file.type.startsWith('image/')) {
+      setInfo('Lütfen bir resim dosyası seçin');
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, MAX_IMAGE_SIZE / Math.max(image.naturalWidth, image.naturalHeight));
+      const w = Math.max(1, Math.round(image.naturalWidth * scale));
+      const h = Math.max(1, Math.round(image.naturalHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';  // saydam alanlar beyaz olsun
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(image, 0, 0, w, h);
+      const data = ctx.getImageData(0, 0, w, h).data;
+      const gray = new Uint8Array(w * h);
+      for (let i = 0; i < gray.length; i++) {
+        gray[i] = Math.round(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]);
+      }
+      state.img = { w, h, canvas, blur: gaussianBlur(gray, w, h) };
+      state.photoName = file.name || 'yapıştırılan resim';
+      $('photoTitle').textContent = `Fotoğraf: ${state.photoName}`;
+      $('placeholder').hidden = true;
+      if (radioValue('tool') !== 'all') {
+        document.querySelector('input[name="tool"][value="all"]').checked = true;
+      }
+      setSelection(null);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      setInfo(`Resim okunamadı: ${file.name}`);
+    };
+    image.src = url;
+  }
+
+  // ---------- Seçim ve önizleme ----------
+  function setSelection(poly) {
+    const img = state.img;
+    if (!img) return;
+    state.selection = poly;
+    state.mask = polygonMask(poly, img.w, img.h);
+    // Eşiği seçili bölgeye göre otomatik ayarla
+    sliders.thresh.value = otsu(img.blur, state.mask);
+    syncOutput(sliders.thresh);
+    updatePreview();
+  }
+
+  function selectionPolygon() {
+    const { w, h } = state.img;
+    return state.selection || [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]];
+  }
+
+  function updatePreview() {
+    if (!state.img) return;
+    const mode = radioValue('mode');
+    if (mode === 'selection') {
+      state.preview = [selectionPolygon()];
+    } else {
+      state.preview = extractContours(
+        state.img, state.mask, mode, +sliders.thresh.value,
+        +sliders.noise.value / 100, $('invert').checked);
+    }
+    setInfo(state.preview.length
+      ? `${state.preview.length} kontur bulundu — "Çiz ▶" ile çiz`
+      : 'Kontur bulunamadı: eşiği değiştirin veya "Ters çevir" deneyin');
+    drawEditor();
+  }
+
+  let previewQueued = false;
+  function queuePreview() {
+    // Kaydırıcı sürüklenirken her olayda değil, kare başına bir kez hesapla
+    if (previewQueued) return;
+    previewQueued = true;
+    requestAnimationFrame(() => { previewQueued = false; updatePreview(); });
+  }
+
+  // ---------- Editör çizimi ----------
+  function fitCanvas(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    return dpr;
+  }
+
+  function editorView() {
+    const { w, h } = state.img;
+    const s = Math.min(editor.width / w, editor.height / h);
+    return { s, ox: (editor.width - w * s) / 2, oy: (editor.height - h * s) / 2 };
+  }
+
+  function drawEditor() {
+    const dpr = fitCanvas(editor);
+    const ctx = editor.getContext('2d');
+    ctx.fillStyle = COLORS.bg;
+    ctx.fillRect(0, 0, editor.width, editor.height);
+    if (!state.img) return;
+
+    const { s, ox, oy } = editorView();
+    const X = x => ox + (x + 0.5) * s, Y = y => oy + (y + 0.5) * s;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(state.img.canvas, ox, oy, state.img.w * s, state.img.h * s);
+
+    const strokePoly = (poly, close) => {
+      ctx.beginPath();
+      poly.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))));
+      if (close) ctx.closePath();
+      ctx.stroke();
+    };
+
+    // Bulunan konturlar (kırmızı önizleme)
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.strokeStyle = COLORS.preview;
+    ctx.lineJoin = 'round';
+    state.preview.forEach(c => strokePoly(c, true));
+
+    // Seçim sınırı
+    ctx.setLineDash([6 * dpr, 4 * dpr]);
+    ctx.strokeStyle = COLORS.selection;
+    if (state.selection) strokePoly(state.selection, true);
+
+    // Sürmekte olan seçim
+    const drag = state.drag;
+    if (drag) {
+      if (drag.tool === 'rect') {
+        const [a, b] = drag.points;
+        ctx.fillStyle = 'rgba(242,204,96,0.15)';
+        ctx.fillRect(X(a[0]), Y(a[1]), (b[0] - a[0]) * s, (b[1] - a[1]) * s);
+        strokePoly([a, [b[0], a[1]], b, [a[0], b[1]]], true);
+      } else {
+        strokePoly(drag.points, false);
+      }
+    }
+    ctx.setLineDash([]);
+  }
+
+  function toImageCoords(e) {
+    const rect = editor.getBoundingClientRect();
+    const dpr = editor.width / rect.width;
+    const { s, ox, oy } = editorView();
+    const x = ((e.clientX - rect.left) * dpr - ox) / s - 0.5;
+    const y = ((e.clientY - rect.top) * dpr - oy) / s - 0.5;
+    return [Math.min(Math.max(x, 0), state.img.w - 1), Math.min(Math.max(y, 0), state.img.h - 1)];
+  }
+
+  editor.addEventListener('pointerdown', e => {
+    const tool = radioValue('tool');
+    if (!state.img || tool === 'all' || e.button !== 0) return;
+    editor.setPointerCapture(e.pointerId);
+    const p = toImageCoords(e);
+    state.drag = { tool, points: tool === 'rect' ? [p, p] : [p] };
+    drawEditor();
+  });
+
+  editor.addEventListener('pointermove', e => {
+    if (!state.drag) return;
+    const p = toImageCoords(e);
+    if (state.drag.tool === 'rect') state.drag.points[1] = p;
+    else state.drag.points.push(p);
+    drawEditor();
+  });
+
+  const endDrag = () => {
+    const drag = state.drag;
+    if (!drag) return;
+    state.drag = null;
+    if (drag.tool === 'rect') {
+      const [[x0, y0], [x1, y1]] = drag.points;
+      const [l, r] = [Math.min(x0, x1), Math.max(x0, x1)], [t, b] = [Math.min(y0, y1), Math.max(y0, y1)];
+      if (r - l >= 3 && b - t >= 3) return setSelection([[l, t], [r, t], [r, b], [l, b]]);
+    } else if (drag.points.length >= 3) {
+      return setSelection(drag.points);
+    }
+    drawEditor();
+  };
+  editor.addEventListener('pointerup', endDrag);
+  editor.addEventListener('pointercancel', endDrag);
+
+  // ===================== 5. Fourier animasyonu =====================
+
+  function setDrawing(contours, name) {
+    const { pts, pen } = chainContours(contours);
+    const { xs, ys, up } = resample(pts, pen, NUM_POINTS);
+
+    // Merkeze al ve [-1, 1] kutusuna ölçekle
+    let mx = 0, my = 0;
+    for (let i = 0; i < NUM_POINTS; i++) { mx += xs[i]; my += ys[i]; }
+    mx /= NUM_POINTS; my /= NUM_POINTS;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < NUM_POINTS; i++) {
+      xs[i] -= mx; ys[i] -= my;
+      minX = Math.min(minX, xs[i]); maxX = Math.max(maxX, xs[i]);
+      minY = Math.min(minY, ys[i]); maxY = Math.max(maxY, ys[i]);
+    }
+    const scale = 2 / Math.max(maxX - minX, maxY - minY, 1e-9);
+    for (let i = 0; i < NUM_POINTS; i++) { xs[i] *= scale; ys[i] *= scale; }
+
+    state.anim = {
+      name, xs, ys, up,
+      bounds: [minX * scale, maxX * scale, minY * scale, maxY * scale],
+      terms: dft(xs, ys),
+    };
+    setCircles();
+  }
+
+  function setCircles() {
+    const A = state.anim;
+    const n = +sliders.circles.value;
+    const terms = A.terms.slice(0, n);
+    A.freq = Float64Array.from(terms, t => t.freq);
+    A.radius = Float64Array.from(terms, t => t.radius);
+    A.phase = Float64Array.from(terms, t => t.phase);
+    A.cx = new Float64Array(n + 1);
+    A.cy = new Float64Array(n + 1);
+    A.frame = 0;
+    A.trail = [];
+    $('animTitle').textContent = `Fourier Serisi: ${A.name}  (${n} çember)`;
+    $('equation').innerHTML = equationHtml(terms, n);
+  }
+
+  // ---------- Denklem ----------
+  const signed = v => `${v < 0 ? '−' : '+'} ${Math.abs(v).toFixed(2)}`;
+
+  function termHtml({ radius, freq, phase }) {
+    // r·e^{i(n·2πt + φ)}
+    const r = radius.toFixed(3);
+    if (freq === 0) return `${r}·<i>e</i><sup>${phase < 0 ? '−' : ''}${Math.abs(phase).toFixed(2)}<i>i</i></sup>`;
+    const rate = freq === 1 ? '2π<i>t</i>'
+      : freq === -1 ? '−2π<i>t</i>'
+      : `${freq < 0 ? '−' : ''}${Math.abs(freq)}·2π<i>t</i>`;
+    return `${r}·<i>e</i><sup><i>i</i>(${rate} ${signed(phase)})</sup>`;
+  }
+
+  function equationHtml(terms, n, shown = 6) {
+    const parts = terms.slice(0, shown).map(t => `<span class="term">${termHtml(t)}</span>`);
+    const rest = n - parts.length;
+    let html = '<span class="term"><i>f</i>(<i>t</i>) = Σ<sub><i>n</i></sub> <i>c<sub>n</sub></i> '
+      + '<i>e</i><sup>2π<i>int</i></sup></span> ≈ ' + parts.join(' + ');
+    if (rest > 0) html += ` + <span class="term">⋯ (+${rest} terim)</span>`;
+    return html;
+  }
+
+  // ---------- Animasyon döngüsü ----------
+  function evaluate(A, t) {
+    // Kolların uçlarını (çember merkezlerini) hesapla
+    let x = 0, y = 0;
+    A.cx[0] = 0; A.cy[0] = 0;
+    for (let j = 0; j < A.freq.length; j++) {
+      const a = 2 * Math.PI * A.freq[j] * t + A.phase[j];
+      x += A.radius[j] * Math.cos(a);
+      y += A.radius[j] * Math.sin(a);
+      A.cx[j + 1] = x; A.cy[j + 1] = y;
+    }
+    return [x, y];
+  }
+
+  function drawAnim(A) {
+    const dpr = fitCanvas(animCanvas);
+    const ctx = animCanvas.getContext('2d');
+    const W = animCanvas.width, H = animCanvas.height;
+    ctx.fillStyle = COLORS.bg;
+    ctx.fillRect(0, 0, W, H);
+
+    const pad = 0.25;
+    const [minX, maxX, minY, maxY] = A.bounds;
+    const bw = maxX - minX + 2 * pad, bh = maxY - minY + 2 * pad;
+    const s = Math.min(W / bw, H / bh);
+    const ox = (W - bw * s) / 2, oy = (H - bh * s) / 2;
+    const X = x => ox + (x - minX + pad) * s, Y = y => oy + (maxY + pad - y) * s;  // y yukarı doğru
+
+    // Hedef kontur (soluk), geçiş çizgileri hariç
+    ctx.lineWidth = 1 * dpr;
+    ctx.strokeStyle = COLORS.target;
+    ctx.beginPath();
+    for (let i = 0; i <= NUM_POINTS; i++) {
+      const k = i % NUM_POINTS;
+      if (i === 0 || A.up[(i - 1) % NUM_POINTS]) ctx.moveTo(X(A.xs[k]), Y(A.ys[k]));
+      else ctx.lineTo(X(A.xs[k]), Y(A.ys[k]));
+    }
+    ctx.stroke();
+
+    // Her bileşenin etrafındaki şeffaf çemberler
+    ctx.strokeStyle = COLORS.circle;
+    ctx.lineWidth = 0.8 * dpr;
+    ctx.beginPath();
+    for (let j = 0; j < A.freq.length; j++) {
+      const r = A.radius[j] * s;
+      if (r < 0.5) continue;
+      const x = X(A.cx[j]), y = Y(A.cy[j]);
+      ctx.moveTo(x + r, y);
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
+    }
+    ctx.stroke();
+
+    // Kollar
+    ctx.strokeStyle = COLORS.arm;
+    ctx.fillStyle = COLORS.arm;
+    ctx.lineWidth = 1 * dpr;
+    ctx.beginPath();
+    for (let j = 0; j <= A.freq.length; j++) {
+      const x = X(A.cx[j]), y = Y(A.cy[j]);
+      j ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+
+    // Çizilen yol (null = kalem kalkık)
+    ctx.strokeStyle = COLORS.path;
+    ctx.lineWidth = 2 * dpr;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    let penDown = false;
+    for (const p of A.trail) {
+      if (!p) { penDown = false; continue; }
+      penDown ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]));
+      penDown = true;
+    }
+    ctx.stroke();
+
+    // Kalemin ucu
+    const tip = A.freq.length;
+    ctx.fillStyle = COLORS.path;
+    ctx.beginPath();
+    ctx.arc(X(A.cx[tip]), Y(A.cy[tip]), 3 * dpr, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  function tick() {
+    const A = state.anim;
+    if (A) {
+      let t = 0, point = [0, 0];
+      for (let step = 0; step < +sliders.speed.value; step++) {
+        if (A.frame >= FRAMES_PER_LOOP) { A.frame = 0; A.trail = []; }
+        // t ∈ [0, 1): bir tam turda tüm kontur çizilir
+        t = A.frame / FRAMES_PER_LOOP;
+        point = evaluate(A, t);
+        A.trail.push(A.up[Math.floor(t * NUM_POINTS)] ? null : point);
+        A.frame++;
+      }
+      drawAnim(A);
+      const [x, y] = point;
+      $('live').textContent =
+        `t = ${t.toFixed(3)}    f(t) = ${x < 0 ? '−' : '+'}${Math.abs(x).toFixed(3)} ${y < 0 ? '−' : '+'} ${Math.abs(y).toFixed(3)}i`;
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ===================== 6. Kontroller =====================
+
+  $('loadBtn').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', e => {
+    loadFile(e.target.files[0]);
+    e.target.value = '';  // aynı dosya tekrar seçilebilsin
+  });
+
+  // Sürükle-bırak ve yapıştırma
+  const stage = $('editorStage');
+  stage.addEventListener('dragover', e => { e.preventDefault(); stage.classList.add('dragover'); });
+  stage.addEventListener('dragleave', () => stage.classList.remove('dragover'));
+  stage.addEventListener('drop', e => {
+    e.preventDefault();
+    stage.classList.remove('dragover');
+    loadFile(e.dataTransfer.files[0]);
+  });
+  window.addEventListener('paste', e => {
+    const item = [...e.clipboardData.items].find(i => i.type.startsWith('image/'));
+    if (item) loadFile(item.getAsFile());
+  });
+
+  document.querySelectorAll('input[name="tool"]').forEach(r => r.addEventListener('change', () => {
+    if (radioValue('tool') === 'all') setSelection(null);
+    else if (state.img) setInfo('Sol panelde fare ile bölge seçin');
+  }));
+  document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', updatePreview));
+  $('invert').addEventListener('change', updatePreview);
+
+  for (const slider of Object.values(sliders)) slider.addEventListener('input', () => syncOutput(slider));
+  sliders.thresh.addEventListener('input', queuePreview);
+  sliders.noise.addEventListener('input', queuePreview);
+  sliders.circles.addEventListener('input', () => state.anim && setCircles());
+
+  $('drawBtn').addEventListener('click', () => {
+    if (!state.preview.length) {
+      setInfo('Önce bir fotoğraf yükleyip bölge seçin');
+      return;
+    }
+    // Resim koordinatında y aşağı doğru artar, bu yüzden y'yi ters çevir
+    setDrawing(state.preview.map(c => c.map(([x, y]) => [x, -y])), state.photoName);
+  });
+
+  new ResizeObserver(drawEditor).observe(editor);
+
+  setDrawing(humanOutline(), 'İnsan Vücudu');
+  drawEditor();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
