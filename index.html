@@ -121,6 +121,7 @@
   #copyStatus { color: var(--muted); }
   .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding-bottom: 5px; }
   .check input { accent-color: var(--accent); }
+  .slider:has(input:disabled), .check:has(input:disabled) { opacity: 0.45; }
   .slider { display: flex; align-items: center; gap: 8px; }
   .slider span { color: var(--muted); min-width: 52px; }
   .slider input { accent-color: var(--accent); width: 140px; }
@@ -210,6 +211,8 @@
         <input type="range" id="thresh" min="0" max="255" step="1" value="128"><output for="thresh">128</output></label>
       <label class="slider"><span>Filtre %</span>
         <input type="range" id="noise" min="0" max="50" step="1" value="5"><output for="noise">5</output></label>
+      <label class="slider"><span>Detay</span>
+        <input type="range" id="detail" min="0" max="100" step="1" value="50"><output for="detail">50</output></label>
     </div>
 
     <div class="action-row">
@@ -240,7 +243,7 @@
       <label class="slider wide"><span>Çember</span>
         <input type="range" id="circles" min="1" max="4000" step="1" value="1000"><output for="circles">1000</output></label>
       <label class="slider"><span>Hız</span>
-        <input type="range" id="speed" min="0.1" max="10" step="0.1" value="0.5"><output for="speed">0.5</output></label>
+        <input type="range" id="speed" min="0" max="1" step="0.01" value="0.5"><output for="speed">0.5</output></label>
     </div>
   </section>
 </main>
@@ -258,14 +261,18 @@
   const STEPS_PER_LOOP = 4000;   // bir tam turdaki adım sayısı (küçük yazılar için sık örnekleme)
   const STEPS_PER_FRAME = 5;     // hız 1'de kare başına adım (bir tur ≈ 13 sn)
   const MAX_IMAGE_SIZE = 800;    // büyük resimler bu boyuta küçültülür
+  const EDGE_INK_BUDGET = NUM_POINTS * 3;  // "Kenarlar" modunda en fazla toplam çizgi uzunluğu (piksel)
+  const JUMP_WEIGHT = 0.3;       // kalem kalkıkken geçilen yola düşen örnek oranı (çizgilere daha çok nokta kalsın)
   const COLORS = {
     bg: '#0d1117', target: 'rgba(188,140,255,0.3)', circle: 'rgba(139,148,158,0.25)', arm: 'rgba(255,123,114,0.7)',
-    path: '#58a6ff', preview: '#ff4d4d', selection: '#f2cc60',
+    path: '#58a6ff', preview: '#ff4d4d', selection: '#f2cc60', projection: 'rgba(230,237,243,0.35)',
   };
 
   const $ = id => document.getElementById(id);
   const editor = $('editor'), animCanvas = $('anim');
-  const sliders = { thresh: $('thresh'), noise: $('noise'), circles: $('circles'), speed: $('speed') };
+  const sliders = {
+    thresh: $('thresh'), noise: $('noise'), detail: $('detail'), circles: $('circles'), speed: $('speed'),
+  };
   const radioValue = name => document.querySelector(`input[name="${name}"]:checked`).value;
 
   // ===================== 1. Kontur kaynakları =====================
@@ -383,8 +390,7 @@
       inv[i] = 1 - bin[i];
     }
     // Delikler: kenara değmeyen arka plan bölgeleri
-    const touchesEdge = c => c.some(([x, y]) => x === 0 || y === 0 || x === w - 1 || y === h - 1);
-    const holes = traceContours(inv, w, h).filter(c => !touchesEdge(c));
+    const holes = traceContours(inv, w, h).filter(c => !touchesBorder(c, w, h));
     const scale = lineHeight / lead;
     return traceContours(bin, w, h).concat(holes)
       .filter(c => c.length >= 4)
@@ -463,7 +469,7 @@
     return pass(pass(src, true), false);
   }
 
-  function canny(blur, w, h, low, high) {
+  function canny(blur, w, h, mask, detail) {
     const mag = new Float32Array(w * h), gxA = new Float32Array(w * h), gyA = new Float32Array(w * h);
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
@@ -477,6 +483,17 @@
         mag[i] = Math.abs(gx) + Math.abs(gy);
       }
     }
+    // Otomatik eşik: seçili bölgedeki gradyanların yüzdeliği. Detay arttıkça daha zayıf kenarlar da girer.
+    const hist = new Uint32Array(2041);
+    let total = 0;
+    for (let i = 0; i < w * h; i++) if (mask[i] && mag[i] > 0) { hist[mag[i]]++; total++; }
+    const need = total * (0.03 + 0.27 * detail);
+    let high = 1;
+    for (let v = 2040, acc = 0; v > 0; v--) {
+      acc += hist[v];
+      if (acc >= need) { high = v; break; }
+    }
+    const low = high * 0.5;
     // Maksimum olmayanları bastır: kenarı tek piksel inceliğe indir
     const nms = new Float32Array(w * h);
     for (let y = 1; y < h - 1; y++) {
@@ -565,42 +582,136 @@
     return contours;
   }
 
+  const touchesBorder = (c, w, h) => c.some(([x, y]) => x === 0 || y === 0 || x === w - 1 || y === h - 1);
+
+  function thin(bin, w, h) {
+    // Zhang-Suen inceltme: kenarları tek piksel kalınlığa indirir (çizgi izleme dallanmasın)
+    const img = bin.slice(), del = [];
+    for (let changed = true; changed;) {
+      changed = false;
+      for (let pass = 0; pass < 2; pass++) {
+        del.length = 0;
+        for (let y = 1; y < h - 1; y++) {
+          for (let x = 1; x < w - 1; x++) {
+            const i = y * w + x;
+            if (!img[i]) continue;
+            const p2 = img[i - w], p3 = img[i - w + 1], p4 = img[i + 1], p5 = img[i + w + 1];
+            const p6 = img[i + w], p7 = img[i + w - 1], p8 = img[i - 1], p9 = img[i - w - 1];
+            const b = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+            if (b < 2 || b > 6) continue;
+            const a = (!p2 & p3) + (!p3 & p4) + (!p4 & p5) + (!p5 & p6)
+              + (!p6 & p7) + (!p7 & p8) + (!p8 & p9) + (!p9 & p2);
+            if (a !== 1) continue;
+            if (pass === 0 ? (p2 & p4 & p6) || (p4 & p6 & p8) : (p2 & p4 & p8) || (p2 & p6 & p8)) continue;
+            del.push(i);
+          }
+        }
+        for (const i of del) img[i] = 0;
+        if (del.length) changed = true;
+      }
+    }
+    return img;
+  }
+
+  function tracePolylines(bin, w, h) {
+    // İnce kenar piksellerini uçtan uca çizgilere dönüştürür. Açık çizgiler (c.open) bir kez,
+    // gidip gelmeden çizilir; konturu izlemek her kenarı iki kez çizerdi.
+    const on = (x, y) => x >= 0 && y >= 0 && x < w && y < h && bin[y * w + x] === 1;
+    const used = new Uint8Array(w * h);
+    const ORDER = [0, 2, 4, 6, 1, 3, 5, 7];  // önce düz komşular, sonra çaprazlar (köşe kesmesin)
+    const degree = (x, y) => {
+      let n = 0;
+      for (let d = 0; d < 8; d++) n += on(x + DX[d], y + DY[d]) ? 1 : 0;
+      return n;
+    };
+    const extend = (x, y) => {
+      const pts = [];
+      for (;;) {
+        let next = -1;
+        for (const d of ORDER) {
+          const nx = x + DX[d], ny = y + DY[d];
+          if (on(nx, ny) && !used[ny * w + nx]) { next = d; break; }
+        }
+        if (next < 0) return pts;
+        x += DX[next]; y += DY[next];
+        used[y * w + x] = 1;
+        pts.push([x, y]);
+      }
+    };
+    const lines = [];
+    const start = (x, y) => {
+      used[y * w + x] = 1;
+      const fwd = extend(x, y), back = extend(x, y);
+      const line = back.reverse().concat([[x, y]], fwd);
+      const [lx, ly] = line[line.length - 1];
+      line.open = !(back.length === 0 && line.length >= 8 && Math.abs(lx - x) <= 1 && Math.abs(ly - y) <= 1);
+      lines.push(line);
+    };
+    // Önce uç noktalardan başla (açık çizgiler), sonra kalanlar (halkalar)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) if (bin[y * w + x] && !used[y * w + x] && degree(x, y) === 1) start(x, y);
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) if (bin[y * w + x] && !used[y * w + x]) start(x, y);
+    }
+    return lines;
+  }
+
   function arcLength(c) {
+    // Açık çizgilerde sondan başa dönüş sayılmaz
     let s = 0;
-    for (let i = 0; i < c.length; i++) {
+    for (let i = 0; i < c.length - (c.open ? 1 : 0); i++) {
       const a = c[i], b = c[(i + 1) % c.length];
       s += Math.hypot(b[0] - a[0], b[1] - a[1]);
     }
     return s;
   }
 
-  function extractContours(img, mask, mode, thresh, minFrac, invert) {
+  function extractContours(img, mask, mode, thresh, detail, minFrac, invert) {
     const { w, h, blur } = img;
-    let bin;
     if (mode === 'edges') {
-      // Tüm kenarlar: çizimler, logolar, detaylı fotoğraflar
-      bin = canny(blur, w, h, thresh * 0.5, thresh);
-      for (let i = 0; i < bin.length; i++) if (!mask[i]) bin[i] = 0;
-    } else {
-      // Dış hat: eşikleme ile nesneyi arka plandan ayır
-      bin = new Uint8Array(w * h);
-      for (let i = 0; i < bin.length; i++) bin[i] = blur[i] > thresh ? 1 : 0;
-      // Seçimin kenarındaki pikseller çoğunlukla arka plandır; onlar beyazsa ters çevir
-      const eroded = morph(mask, w, h, 1, false, 0);
-      let ring = 0, ringOn = 0;
-      for (let i = 0; i < bin.length; i++) if (mask[i] && !eroded[i]) { ring++; ringOn += bin[i]; }
-      const flip = ring > 0 && (ringOn / ring > 0.5) !== invert;
-      for (let i = 0; i < bin.length; i++) bin[i] = mask[i] ? (flip ? 1 - bin[i] : bin[i]) : 0;
-      bin = morph(morph(bin, w, h, 2, true), w, h, 2, false);  // 5x5 kapama: küçük boşlukları doldur
+      // Detaylı çizim: Canny kenarları -> tek piksel inceltme -> uçtan uca çizgiler
+      img.blur2 ||= gaussianBlur(blur, w, h);  // ikinci yumuşatma: doku gürültüsünü bastırır
+      const edges = canny(img.blur2, w, h, mask, detail);
+      for (let i = 0; i < edges.length; i++) if (!mask[i]) edges[i] = 0;
+      const lines = tracePolylines(thin(edges, w, h), w, h)
+        .map(c => ({ c, len: arcLength(c) }))
+        .sort((a, b) => b.len - a.len);
+      // Kısa kırıntıları at; en uzun (en belirgin) çizgilerden başlayıp mürekkep bütçesini doldur
+      const minLen = Math.max(minFrac * 0.3 * Math.hypot(w, h), 6);
+      const out = [];
+      let ink = 0;
+      for (const o of lines) {
+        if (o.len < minLen) break;
+        if (ink + o.len > EDGE_INK_BUDGET) continue;
+        out.push(o.c);
+        ink += o.len;
+      }
+      return out;
     }
 
-    let contours = traceContours(bin, w, h)
+    // Dış hat: eşikleme ile nesneyi arka plandan ayır
+    let bin = new Uint8Array(w * h);
+    for (let i = 0; i < bin.length; i++) bin[i] = blur[i] > thresh ? 1 : 0;
+    // Seçimin kenarındaki pikseller çoğunlukla arka plandır; onlar beyazsa ters çevir
+    const eroded = morph(mask, w, h, 1, false, 0);
+    let ring = 0, ringOn = 0;
+    for (let i = 0; i < bin.length; i++) if (mask[i] && !eroded[i]) { ring++; ringOn += bin[i]; }
+    const flip = ring > 0 && (ringOn / ring > 0.5) !== invert;
+    for (let i = 0; i < bin.length; i++) bin[i] = mask[i] ? (flip ? 1 - bin[i] : bin[i]) : 0;
+    bin = morph(morph(bin, w, h, 2, true), w, h, 2, false);  // 5x5 kapama: küçük boşlukları doldur
+
+    // Dış sınırlar + iç delikler (gözler, aralıklar ...): şekli daha tanınır kılar
+    const inv = new Uint8Array(w * h);
+    for (let i = 0; i < inv.length; i++) inv[i] = 1 - bin[i];
+    const holes = traceContours(inv, w, h).filter(c => !touchesBorder(c, w, h));
+    const contours = traceContours(bin, w, h).concat(holes)
       .map(c => ({ c, len: arcLength(c) }))
       .sort((a, b) => b.len - a.len);
     if (!contours.length) return [];
     // Çok küçük gürültü konturlarını at
     const minLen = Math.max(minFrac * contours[0].len, 10);
-    return contours.slice(0, 60).filter(o => o.len >= minLen).map(o => o.c);
+    return contours.slice(0, 120).filter(o => o.len >= minLen).map(o => o.c);
   }
 
   function polygonMask(poly, w, h) {
@@ -622,41 +733,45 @@
   // ===================== 3. Fourier serisi =====================
 
   function chainContours(contours) {
-    // Konturları en yakın komşu sırasıyla tek bir kapalı yola birleştirir.
+    // Konturları en yakın komşu sırasıyla tek bir kapalı yola birleştirir. Kapalı konturlar
+    // en yakın noktalarından başlayıp kapatılır; açık çizgilere (c.open) en yakın uçtan girilir.
     // pen[i] true ise i -> i+1 parçası konturlar arası geçiştir ve çizilmez.
-    const remaining = contours.map(c => c.concat([c[0]]));  // her konturu kapat
-    let current = remaining.shift();
-    const pts = current.slice();
-    const pen = new Array(current.length - 1).fill(false);
+    const pts = [], pen = [];
+    const append = path => {
+      if (pts.length) pen.push(true);
+      path.forEach((p, k) => { pts.push(p); if (k > 0) pen.push(false); });
+    };
+    const orient = (c, j) => {
+      if (c.open) return j === 0 ? c : c.slice().reverse();
+      return c.slice(j).concat(c.slice(0, j), [c[j]]);
+    };
 
+    const remaining = contours.slice();
+    append(orient(remaining.shift(), 0));
     while (remaining.length) {
-      const [ex, ey] = current[current.length - 1];
+      const [ex, ey] = pts[pts.length - 1];
       let bi = 0, bj = 0, bd = Infinity;
       remaining.forEach((c, i) => {
-        for (let j = 0; j < c.length; j++) {
+        const candidates = c.open ? [0, c.length - 1] : c.keys();
+        for (const j of candidates) {
           const d = (c[j][0] - ex) ** 2 + (c[j][1] - ey) ** 2;
           if (d < bd) { bd = d; bi = i; bj = j; }
         }
       });
-      // Konturu en yakın noktadan başlayacak şekilde döndür
-      const ring = remaining.splice(bi, 1)[0].slice(0, -1);
-      current = ring.slice(bj).concat(ring.slice(0, bj), [ring[bj]]);
-      pen.push(true);
-      for (let k = 0; k < current.length; k++) {
-        pts.push(current[k]);
-        if (k > 0) pen.push(false);
-      }
+      append(orient(remaining.splice(bi, 1)[0], bj));
     }
     pts.push(pts[0]);  // başlangıca dönüş
-    pen.push(contours.length > 1);
+    pen.push(contours.length > 1 || !!contours[0].open);
     return { pts, pen };
   }
 
   function resample(pts, pen, n) {
-    // Yolu yay uzunluğuna göre eşit aralıklı n noktaya böler
+    // Yolu yay uzunluğuna göre eşit aralıklı n noktaya böler; kalem kalkık geçişler
+    // daha az örnek alır ki noktaların çoğu görünen çizgilere kalsın
     const s = new Float64Array(pts.length);
     for (let i = 1; i < pts.length; i++) {
-      s[i] = s[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      const d = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      s[i] = s[i - 1] + (pen[i - 1] ? JUMP_WEIGHT * d : d);
     }
     const total = s[s.length - 1];
     const xs = new Float64Array(n), ys = new Float64Array(n), up = new Uint8Array(n);
@@ -769,11 +884,14 @@
   function updatePreview() {
     if (!state.img) return;
     const mode = radioValue('mode');
+    // Eşik yalnızca dış hatta, Detay yalnızca kenarlarda kullanılır
+    sliders.thresh.disabled = $('invert').disabled = mode !== 'outline';
+    sliders.detail.disabled = mode !== 'edges';
     if (mode === 'selection') {
       state.preview = [selectionPolygon()];
     } else {
       state.preview = extractContours(
-        state.img, state.mask, mode, +sliders.thresh.value,
+        state.img, state.mask, mode, +sliders.thresh.value, +sliders.detail.value / 100,
         +sliders.noise.value / 100, $('invert').checked);
     }
     setInfo(state.preview.length
@@ -827,7 +945,7 @@
     ctx.lineWidth = 1.5 * dpr;
     ctx.strokeStyle = COLORS.preview;
     ctx.lineJoin = 'round';
-    state.preview.forEach(c => strokePoly(c, true));
+    state.preview.forEach(c => strokePoly(c, !c.open));
 
     // Seçim sınırı
     ctx.setLineDash([6 * dpr, 4 * dpr]);
@@ -910,28 +1028,51 @@
     const scale = 2 / Math.max(maxX - minX, maxY - minY, 1e-9);
     for (let i = 0; i < NUM_POINTS; i++) { xs[i] *= scale; ys[i] *= scale; }
 
+    const zeros = new Float64Array(NUM_POINTS);
     state.anim = {
       name, xs, ys, up,
       bounds: [minX * scale, maxX * scale, minY * scale, maxY * scale],
       terms: dft(xs, ys),
+      // X/Y düzeni için gerçek sinyallerin ayrı serileri: x(t) ve y(t)
+      xTerms: dft(xs, zeros),
+      yTerms: dft(ys, zeros),
     };
     setCircles();
+  }
+
+  function makeChain(terms, ox, oy, rot) {
+    // (ox, oy) merkezli çember zinciri; rot tüm zinciri döndürür (fazlara eklenir)
+    const n = terms.length;
+    return {
+      ox, oy,
+      freq: Float64Array.from(terms, t => t.freq),
+      radius: Float64Array.from(terms, t => t.radius),
+      phase: Float64Array.from(terms, t => t.phase + rot),
+      cx: new Float64Array(n + 1),
+      cy: new Float64Array(n + 1),
+    };
   }
 
   function setCircles() {
     const A = state.anim;
     const n = +sliders.circles.value;
     const terms = A.terms.slice(0, n);
-    A.freq = Float64Array.from(terms, t => t.freq);
-    A.radius = Float64Array.from(terms, t => t.radius);
-    A.phase = Float64Array.from(terms, t => t.phase);
-    A.cx = new Float64Array(n + 1);
-    A.cy = new Float64Array(n + 1);
+    // Çemberlerin yarısı üstte x(t)'yi, yarısı solda (90° döndürülmüş) y(t)'yi çizer.
+    // Üst zincirin ucunun x'i ve sol zincirin ucunun y'si kalemin konumunu verir.
+    const nx = Math.ceil(n / 2), ny = Math.max(1, n - nx);
+    const [minX, maxX, minY, maxY] = A.bounds;
+    const ex = 1.6 * A.xTerms[0].radius, ey = 1.6 * A.yTerms[0].radius, gap = 0.3;
+    const top = maxY + gap + ex, left = minX - gap - ey;
+    A.chains = [
+      makeChain(A.xTerms.slice(0, nx), 0, top, 0),
+      makeChain(A.yTerms.slice(0, ny), left, 0, Math.PI / 2),
+    ];
+    A.view = [left - ey, maxX, minY, top + ex];
+    $('animTitle').textContent = `Fourier Serisi: ${A.name}  (${nx} + ${ny} çember)`;
     A.frame = 0;
     A.carry = 0;
     A.trail = [];
-    evaluate(A, 0);  // ilk karede kollar doğru yerde olsun
-    $('animTitle').textContent = `Fourier Serisi: ${A.name}  (${n} çember)`;
+    A.pen = evaluate(A, 0);  // ilk karede kollar doğru yerde olsun
     $('equation').innerHTML = equationHtml(terms, n);
     A.shown = terms;
     $('copyStatus').textContent = '';
@@ -1044,16 +1185,20 @@
 
   // ---------- Animasyon döngüsü ----------
   function evaluate(A, t) {
-    // Kolların uçlarını (çember merkezlerini) hesapla
-    let x = 0, y = 0;
-    A.cx[0] = 0; A.cy[0] = 0;
-    for (let j = 0; j < A.freq.length; j++) {
-      const a = 2 * Math.PI * A.freq[j] * t + A.phase[j];
-      x += A.radius[j] * Math.cos(a);
-      y += A.radius[j] * Math.sin(a);
-      A.cx[j + 1] = x; A.cy[j + 1] = y;
+    // Her zincirde kolların uçlarını (çember merkezlerini) hesapla
+    for (const C of A.chains) {
+      let x = C.ox, y = C.oy;
+      C.cx[0] = x; C.cy[0] = y;
+      for (let j = 0; j < C.freq.length; j++) {
+        const a = 2 * Math.PI * C.freq[j] * t + C.phase[j];
+        x += C.radius[j] * Math.cos(a);
+        y += C.radius[j] * Math.sin(a);
+        C.cx[j + 1] = x; C.cy[j + 1] = y;
+      }
     }
-    return [x, y];
+    // Kalem: üst zincirin ucunun x'i, sol zincirin ucunun y'si
+    const [cx, cy] = A.chains;
+    return [cx.cx[cx.freq.length], cy.cy[cy.freq.length]];
   }
 
   function drawAnim(A) {
@@ -1064,7 +1209,7 @@
     ctx.fillRect(0, 0, W, H);
 
     const pad = 0.25;
-    const [minX, maxX, minY, maxY] = A.bounds;
+    const [minX, maxX, minY, maxY] = A.view;
     const bw = maxX - minX + 2 * pad, bh = maxY - minY + 2 * pad;
     const s = Math.min(W / bw, H / bh);
     const ox = (W - bw * s) / 2, oy = (H - bh * s) / 2;
@@ -1085,12 +1230,14 @@
     ctx.strokeStyle = COLORS.circle;
     ctx.lineWidth = 0.8 * dpr;
     ctx.beginPath();
-    for (let j = 0; j < A.freq.length; j++) {
-      const r = A.radius[j] * s;
-      if (r < 0.5) continue;
-      const x = X(A.cx[j]), y = Y(A.cy[j]);
-      ctx.moveTo(x + r, y);
-      ctx.arc(x, y, r, 0, 2 * Math.PI);
+    for (const C of A.chains) {
+      for (let j = 0; j < C.freq.length; j++) {
+        const r = C.radius[j] * s;
+        if (r < 0.5) continue;
+        const x = X(C.cx[j]), y = Y(C.cy[j]);
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, 2 * Math.PI);
+      }
     }
     ctx.stroke();
 
@@ -1099,11 +1246,43 @@
     ctx.fillStyle = COLORS.arm;
     ctx.lineWidth = 1 * dpr;
     ctx.beginPath();
-    for (let j = 0; j <= A.freq.length; j++) {
-      const x = X(A.cx[j]), y = Y(A.cy[j]);
-      j ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    for (const C of A.chains) {
+      for (let j = 0; j <= C.freq.length; j++) {
+        const x = X(C.cx[j]), y = Y(C.cy[j]);
+        j ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
     }
     ctx.stroke();
+
+    // Kol uçlarında ok başları (çok kısa kollarda çizilmez)
+    ctx.beginPath();
+    for (const C of A.chains) {
+      for (let j = 0; j < C.freq.length; j++) {
+        const x0 = X(C.cx[j]), y0 = Y(C.cy[j]), x1 = X(C.cx[j + 1]), y1 = Y(C.cy[j + 1]);
+        const len = Math.hypot(x1 - x0, y1 - y0);
+        if (len < 6 * dpr) continue;
+        const head = Math.min(0.3 * len, 8 * dpr), ux = (x1 - x0) / len, uy = (y1 - y0) / len;
+        const bx = x1 - ux * head, by = y1 - uy * head, hw = head * 0.45;
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(bx - uy * hw, by + ux * hw);
+        ctx.lineTo(bx + uy * hw, by - ux * hw);
+        ctx.closePath();
+      }
+    }
+    ctx.fill();
+
+    // Zincir uçlarından kaleme izdüşüm çizgileri
+    const [px, py] = A.pen;
+    ctx.strokeStyle = COLORS.projection;
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.beginPath();
+    for (const C of A.chains) {
+      const n = C.freq.length;
+      ctx.moveTo(X(C.cx[n]), Y(C.cy[n]));
+      ctx.lineTo(X(px), Y(py));
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
 
     // Çizilen yol (null = kalem kalkık)
     ctx.strokeStyle = COLORS.path;
@@ -1120,10 +1299,9 @@
     ctx.stroke();
 
     // Kalemin ucu
-    const tip = A.freq.length;
     ctx.fillStyle = COLORS.path;
     ctx.beginPath();
-    ctx.arc(X(A.cx[tip]), Y(A.cy[tip]), 3 * dpr, 0, 2 * Math.PI);
+    ctx.arc(X(px), Y(py), 3 * dpr, 0, 2 * Math.PI);
     ctx.fill();
   }
 
@@ -1139,7 +1317,7 @@
         if (A.frame >= STEPS_PER_LOOP) { A.frame = 0; A.trail = []; }
         // t ∈ [0, 1): bir tam turda tüm kontur çizilir
         t = A.frame / STEPS_PER_LOOP;
-        point = evaluate(A, t);
+        point = A.pen = evaluate(A, t);
         A.trail.push(A.up[Math.floor(t * NUM_POINTS)] ? null : point);
         A.frame++;
       }
@@ -1196,15 +1374,16 @@
   for (const slider of Object.values(sliders)) slider.addEventListener('input', () => syncOutput(slider));
   sliders.thresh.addEventListener('input', queuePreview);
   sliders.noise.addEventListener('input', queuePreview);
+  sliders.detail.addEventListener('input', queuePreview);
   sliders.circles.addEventListener('input', () => state.anim && setCircles());
-
   $('drawBtn').addEventListener('click', () => {
     if (!state.preview.length) {
       setInfo('Önce bir fotoğraf yükleyip bölge seçin');
       return;
     }
     // Resim koordinatında y aşağı doğru artar, bu yüzden y'yi ters çevir
-    setDrawing(state.preview.map(c => c.map(([x, y]) => [x, -y])), state.photoName);
+    setDrawing(state.preview.map(c => Object.assign(c.map(([x, y]) => [x, -y]), { open: c.open })),
+      state.photoName);
   });
 
   new ResizeObserver(drawEditor).observe(editor);
