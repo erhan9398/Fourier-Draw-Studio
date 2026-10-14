@@ -116,6 +116,9 @@
   .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .btn.primary { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
   .btn.primary:hover { background: var(--green-hover); }
+  .copy-row { justify-content: center; }
+  .copy-row .slider span { min-width: 0; }
+  #copyStatus { color: var(--muted); }
   .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding-bottom: 5px; }
   .check input { accent-color: var(--accent); }
   .slider { display: flex; align-items: center; gap: 8px; }
@@ -222,6 +225,17 @@
     </div>
     <div class="equation" id="equation"></div>
     <div class="live" id="live"></div>
+    <div class="action-row copy-row">
+      <label class="slider"><span>Biçim</span>
+        <select id="copyFormat" class="btn">
+          <option value="text">Metin</option>
+          <option value="latex">LaTeX</option>
+          <option value="python">Python</option>
+        </select>
+      </label>
+      <button class="btn" id="copyBtn" type="button">Denklemi kopyala</button>
+      <span id="copyStatus" aria-live="polite"></span>
+    </div>
     <div class="controls">
       <label class="slider wide"><span>Çember</span>
         <input type="range" id="circles" min="1" max="4000" step="1" value="1000"><output for="circles">1000</output></label>
@@ -919,6 +933,8 @@
     evaluate(A, 0);  // ilk karede kollar doğru yerde olsun
     $('animTitle').textContent = `Fourier Serisi: ${A.name}  (${n} çember)`;
     $('equation').innerHTML = equationHtml(terms, n);
+    A.shown = terms;
+    $('copyStatus').textContent = '';
   }
 
   // ---------- Denklem ----------
@@ -941,6 +957,89 @@
       + '<i>e</i><sup>2π<i>int</i></sup></span> ≈ ' + parts.join(' + ');
     if (rest > 0) html += ` + <span class="term">⋯ (+${rest} terim)</span>`;
     return html;
+  }
+
+  // ---------- Denklemi kopyalama (tüm terimler) ----------
+  const fmt = v => v.toFixed(6);
+  const plusMinus = v => `${v < 0 ? '-' : '+'} ${fmt(Math.abs(v))}`;
+
+  function equationText(format) {
+    const A = state.anim, terms = A.shown;
+    const header = `${A.name}: ${terms.length} terim, t ∈ [0, 1), en büyük çemberden küçüğe`;
+
+    if (format === 'latex') {
+      const body = terms.map(({ radius, freq, phase }) =>
+        `${fmt(radius)}\\,e^{i(2\\pi \\cdot ${freq < 0 ? `(${freq})` : freq}\\, t ${plusMinus(phase)})}`);
+      return `% ${header}\nf(t) = ${body.join('\n  + ')}`;
+    }
+
+    if (format === 'python') {
+      const array = (values, digits) => {
+        const items = values.map(v => (digits === undefined ? String(v) : v.toFixed(digits)));
+        const rows = [];
+        for (let i = 0; i < items.length; i += 8) rows.push('    ' + items.slice(i, i + 8).join(', '));
+        return `np.array([\n${rows.join(',\n')},\n])`;
+      };
+      // Kalemin kalktığı t aralıkları (konturlar arası geçişler)
+      const gaps = [];
+      for (let i = 0; i < A.up.length; i++) {
+        if (!A.up[i]) continue;
+        const start = i;
+        while (i < A.up.length && A.up[i]) i++;
+        gaps.push(`(${(start / A.up.length).toFixed(6)}, ${(i / A.up.length).toFixed(6)})`);
+      }
+      return [
+        `# Fourier serisi — ${header}`,
+        '# f(t) = Σ r_k · e^{i(2π·n_k·t + φ_k)}',
+        'import numpy as np',
+        'import matplotlib.pyplot as plt',
+        '',
+        `n = ${array(terms.map(t => t.freq))}`,
+        `r = ${array(terms.map(t => t.radius), 6)}`,
+        `phi = ${array(terms.map(t => t.phase), 6)}`,
+        '',
+        '',
+        'def f(t):',
+        '    t = np.asarray(t)[..., None]',
+        '    return np.sum(r * np.exp(1j * (2 * np.pi * n * t + phi)), axis=-1)',
+        '',
+        '',
+        '# Kalemin kalktığı aralıklar (ayrı parçalar arası geçiş çizgileri çizilmesin)',
+        `gaps = [${gaps.join(', ')}]`,
+        '',
+        't = np.linspace(0, 1, 8000, endpoint=False)',
+        'z = f(t)',
+        'for a, b in gaps:',
+        '    z[(t >= a) & (t < b)] = np.nan',
+        '',
+        'plt.plot(z.real, z.imag)',
+        "plt.axis('equal')",
+        'plt.show()',
+        '',
+      ].join('\n');
+    }
+
+    // Düz metin
+    const body = terms.map(({ radius, freq, phase }) =>
+      `${fmt(radius)}·e^(i(2π·${freq < 0 ? `(${freq})` : freq}·t ${plusMinus(phase)}))`);
+    return `# ${header}\nf(t) = ${body.join('\n     + ')}\n`;
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Eski tarayıcılar / izin yoksa: gizli metin kutusu ile kopyala
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      area.remove();
+      if (!ok) throw new Error('copy failed');
+    }
   }
 
   // ---------- Animasyon döngüsü ----------
@@ -1055,6 +1154,17 @@
   }
 
   // ===================== 6. Kontroller =====================
+
+  $('copyBtn').addEventListener('click', async () => {
+    const format = $('copyFormat').value;
+    try {
+      await copyText(equationText(format));
+      const label = $('copyFormat').selectedOptions[0].textContent;
+      $('copyStatus').textContent = `Kopyalandı ✓ (${state.anim.shown.length} terim, ${label})`;
+    } catch {
+      $('copyStatus').textContent = 'Kopyalanamadı: tarayıcı panoya erişime izin vermedi';
+    }
+  });
 
   $('loadBtn').addEventListener('click', () => $('fileInput').click());
   $('fileInput').addEventListener('change', e => {
